@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeDoc - 代码文档平台</title>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.27/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app" v-cloak>
+
+  <!-- Toasts -->
+  <div class="toast-wrap">
+    <div v-for="(t, i) in toasts" :key="i" :class="'toast ' + (t.type||'info')">{{ t.msg }}</div>
+  </div>
+
+  <!-- ===================== AUTH ===================== -->
+  <div v-if="!token" class="apple-auth-page">
+    <div class="apple-auth-card">
+      <div class="apple-auth-logo">CodeDoc</div>
+      <div class="apple-auth-subtitle">代码文档平台</div>
+      <div class="apple-auth-form">
+        <input v-model="authForm.username" class="apple-input" :placeholder="authMode==='login' ? '用户名' : '设置用户名'" @keydown.enter="doAuth" autocomplete="username">
+        <input v-model="authForm.password" type="password" class="apple-input" :placeholder="authMode==='login' ? '密码' : '设置密码'" @keydown.enter="doAuth" autocomplete="current-password">
+        <div v-if="authError" class="apple-auth-error">{{ authError }}</div>
+        <button @click="doAuth" class="apple-btn" :disabled="authLoading">
+          <span v-if="authLoading" class="apple-spinner"></span>
+          {{ authMode === 'login' ? '登录' : '注册' }}
+        </button>
+        <div class="apple-auth-toggle">
+          <span v-if="authMode==='login'" @click="authMode='register'">没有账号？创建账号</span>
+          <span v-else @click="authMode='login'">已有账号？登录</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MAIN ===================== -->
+  <div v-else class="shell" :class="{'sidebar-open': sidebarOpen}">
+
+    <!-- Backdrop for mobile drawer -->
+    <div class="sidebar-backdrop" @click="sidebarOpen=false"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="brand-mark">C</div>
+        <div>
+          <div class="brand-title">CodeDoc</div>
+          <div class="brand-sub">代码文档平台</div>
+        </div>
+      </div>
+
+      <!-- Top-level navigation (above repo tree) -->
+      <div class="sidebar-nav">
+        <a class="nav-link" :class="{active: currentTab === 'tasks'}" @click="goPage('tasks')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.7;flex-shrink:0">
+            <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          <span style="flex:1">我的任务</span>
+          <span v-if="runningTaskCount() > 0" class="task-badge">{{ runningTaskCount() }}</span>
+        </a>
+      </div>
+
+      <div class="sidebar-section-title">仓库</div>
+
+      <div class="repo-tree">
+        <div v-for="r in repos" :key="r.name" class="repo-item" :class="{active: currentRepo && currentRepo.name===r.name && currentTab==='overview'}">
+          <div class="repo-row" @click="selectRepo(r,'overview')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.5;flex-shrink:0">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+            <span class="name" :title="r.name">{{ shortRepoName(r.name) }}</span>
+            <span class="status-dot" :class="r.status"></span>
+          </div>
+          <div v-if="r.status==='ready' && currentRepo && currentRepo.name===r.name" class="repo-children">
+            <div class="child" :class="{active: currentTab==='doc'}" @click="selectRepo(r,'doc')">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              设计文档
+            </div>
+            <div class="child" :class="{active: currentTab==='qa'}" @click="selectRepo(r,'qa')">
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              代码问答
+            </div>
+          </div>
+        </div>
+        <div v-if="repos.length===0 && !reposLoading" style="padding:20px 12px;font-size:12.5px;color:var(--text-3);text-align:center;line-height:1.6">
+          还没有仓库<br>点击下方按钮添加
+        </div>
+      </div>
+
+      <div class="sidebar-add">
+        <button class="btn-add-repo" @click="showAddModal=true; sidebarOpen=false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          添加仓库
+        </button>
+      </div>
+
+      <div class="sidebar-foot">
+        <div class="avatar">{{ (username||'?').charAt(0).toUpperCase() }}</div>
+        <div class="user-info">
+          <div class="user-name">{{ username }}</div>
+          <div class="user-sub">已登录</div>
+        </div>
+        <button class="btn-icon" @click="logout" title="退出">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="topbar">
+        <button class="hamburger" @click="sidebarOpen=!sidebarOpen" :aria-label="sidebarOpen ? '关闭菜单' : '打开菜单'">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line v-if="!sidebarOpen" x1="3" y1="6" x2="21" y2="6"/>
+            <line v-if="!sidebarOpen" x1="3" y1="12" x2="21" y2="12"/>
+            <line v-if="!sidebarOpen" x1="3" y1="18" x2="21" y2="18"/>
+            <line v-if="sidebarOpen" x1="18" y1="6" x2="6" y2="18"/>
+            <line v-if="sidebarOpen" x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+        <div class="crumb">
+          <span>CodeDoc</span>
+          <template v-if="currentRepo"><span>/</span><b>{{ currentRepo.name }}</b></template>
+          <template v-if="currentRepo && currentTab==='doc'"><span>/</span><span>设计文档</span></template>
+          <template v-if="currentRepo && currentTab==='qa'"><span>/</span><span>代码问答</span></template>
+        </div>
+        <div class="topbar-actions">
+          <a href="/platform/" class="platform-link">平台首页</a>
+          <a href="/devbot/" class="platform-link">DevBot 评审</a>
+        </div>
+      </header>
+
+      <div class="content">
+
+        <!-- 我的任务 view -->
+        <div v-if="currentTab === 'tasks'">
+          <div class="detail-head">
+            <div class="detail-title-row">
+              <h1 class="detail-title">我的任务</h1>
+              <span style="font-size:12px;color:var(--text-3);font-weight:500">{{ docgenTasks.length }} 条记录</span>
+            </div>
+            <div class="detail-sub">所有的文档生成任务记录（最近 50 条）。任务在后台运行，可关闭页面，完成后回来查看。</div>
+          </div>
+          <div v-if="!docgenTasks.length" class="empty" style="padding:60px 20px">
+            <div class="empty-icon">📋</div>
+            <div class="empty-title">还没有任务</div>
+            <div class="empty-sub">前往任意仓库的"设计文档"页面点击"生成文档"即可创建任务</div>
+          </div>
+          <div v-else class="tasks-list">
+            <div v-for="t in docgenTasks" :key="t.task_id" class="task-card">
+              <div class="task-card-top">
+                <div class="task-repo">{{ t.repo }}</div>
+                <div class="task-status" :class="'status-' + t.status">
+                  {{ TASK_STATUS_LABELS[t.status] || t.status }}
+                </div>
+              </div>
+              <div class="task-meta">
+                <span>{{ taskTemplateLabel(t) }}</span>
+                <span>·</span>
+                <span>{{ fmtTaskTime(t.submitted_at) }}</span>
+                <span v-if="t.status === 'queued' && t.position">· 排队第 {{ t.position }} 位</span>
+                <span v-if="t.stage && t.status === 'running'">· {{ DOC_STAGE_LABELS[t.stage] || t.stage }}</span>
+              </div>
+              <div v-if="t.status === 'running' && t.progress" class="task-progress">
+                {{ t.progress }}
+              </div>
+              <div v-if="t.status === 'error'" class="task-error">
+                {{ t.error || '未知错误' }}
+              </div>
+              <div v-if="t.status === 'done'" class="task-actions">
+                <button class="btn-primary-pill" @click="viewTaskDocument(t)">查看文档</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Overview (no repo selected OR overview tab) -->
+        <div v-if="currentTab !== 'tasks' && (!currentRepo || currentTab==='overview')">
+          <div class="detail-head" v-if="!currentRepo">
+            <div class="detail-title-row">
+              <h1 class="detail-title">我的仓库</h1>
+            </div>
+            <div class="detail-sub">管理你导入的 GitHub 仓库，每个仓库都会自动构建代码文档图谱。</div>
+          </div>
+          <div class="detail-head" v-else>
+            <div class="detail-title-row">
+              <h1 class="detail-title">{{ currentRepo.name }}</h1>
+              <span class="repo-status-badge" :class="currentRepo.status">{{ statusText(currentRepo.status) }}</span>
+            </div>
+            <div class="detail-sub">{{ currentRepo.url }}</div>
+            <div class="detail-stats-row" v-if="currentRepo.status==='ready'">
+              <div class="stat-block"><span class="num">{{ currentRepo.nodes }}</span><span class="label">节点</span></div>
+              <div class="stat-block"><span class="num">{{ currentRepo.edges }}</span><span class="label">边</span></div>
+            </div>
+          </div>
+
+          <div v-if="reposLoading && repos.length===0" class="loading-block">
+            <div class="spinner-lg"></div>
+          </div>
+
+          <div v-else-if="!currentRepo && repos.length===0" class="empty">
+            <div class="empty-icon">📦</div>
+            <div class="empty-title">还没有仓库</div>
+            <div class="empty-sub">点击左侧"添加仓库"开始（支持 GitHub 链接或上传 ZIP）</div>
+          </div>
+
+          <div v-else-if="!currentRepo" class="repo-grid">
+            <div v-for="r in repos" :key="r.name" class="repo-card" @click="selectRepo(r, r.status==='ready'?'doc':'overview')">
+              <div class="repo-card-head">
+                <div class="repo-avatar">{{ (r.name.split('/')[0]||'?').charAt(0).toUpperCase() }}</div>
+                <div class="repo-meta">
+                  <div class="repo-card-name">{{ r.name.split('/')[1] || r.name }}</div>
+                  <div class="repo-card-org">{{ r.name.split('/')[0] }}</div>
+                </div>
+                <span class="repo-status-badge" :class="r.status">{{ statusText(r.status) }}</span>
+              </div>
+              <div class="repo-card-stats" v-if="r.status==='ready'">
+                <div class="stat-pill">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="2" r="2"/><circle cx="12" cy="22" r="2"/><circle cx="2" cy="12" r="2"/><circle cx="22" cy="12" r="2"/></svg>
+                  {{ r.nodes }} 节点
+                </div>
+                <div class="stat-pill">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
+                  {{ r.edges }} 边
+                </div>
+              </div>
+              <div v-if="r.progress && r.status!=='ready' && r.status!=='error'" class="repo-card-progress">
+                {{ r.progress }}
+              </div>
+              <div class="repo-card-foot">
+                <span>{{ formatDate(r.created_at) }}</span>
+                <button class="btn-icon" @click.stop="deleteRepo(r)" title="删除" style="color:var(--danger)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Repo overview detail (when selected and status=ready) -->
+          <div v-else-if="currentRepo && currentRepo.status==='ready'">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:24px">
+              <div class="repo-card" @click="selectRepo(currentRepo,'doc')" style="cursor:pointer">
+                <div style="font-size:13px;color:var(--text-3);margin-bottom:6px;letter-spacing:0.4px">📄 设计文档</div>
+                <div style="font-size:15px;font-weight:600;margin-bottom:4px">AI 生成架构文档</div>
+                <div style="font-size:12.5px;color:var(--text-3);line-height:1.6">基于代码文档图谱，自动生成模块、调用关系和接口说明的设计文档。</div>
+              </div>
+              <div class="repo-card" @click="selectRepo(currentRepo,'qa')" style="cursor:pointer">
+                <div style="font-size:13px;color:var(--text-3);margin-bottom:6px;letter-spacing:0.4px">💬 代码问答</div>
+                <div style="font-size:15px;font-weight:600;margin-bottom:4px">与代码对话</div>
+                <div style="font-size:12.5px;color:var(--text-3);line-height:1.6">用自然语言提问，AI 基于知识图谱检索相关代码并回答你的问题。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Doc tab -->
+        <div v-if="currentRepo && currentTab==='doc'">
+          <div class="detail-head">
+            <div class="detail-title-row">
+              <h1 class="detail-title">设计文档</h1>
+              <span style="font-size:12px;color:var(--text-3);font-weight:500;background:#fff;padding:4px 10px;border-radius:8px;border:1px solid var(--border)">{{ currentRepo.name }}</span>
+            </div>
+            <div class="detail-sub">基于代码文档图谱（{{ currentRepo.nodes }} 节点 / {{ currentRepo.edges }} 边）生成的架构设计文档，使用 PlantUML 渲染</div>
+          </div>
+
+          <!-- User-uploaded reference docs panel -->
+          <div class="user-docs-panel">
+            <div class="user-docs-head">
+              <div class="user-docs-title">📎 参考资料</div>
+              <span style="font-size:12px;color:var(--text-3)">{{ userDocs.length }} / 不限</span>
+            </div>
+            <div class="user-docs-sub">
+              上传项目相关文档（需求/设计/规范等），代码问答时 AI 会综合参考。
+              支持 PDF / DOCX / MD / TXT / HTML，单文件最大 20MB。
+            </div>
+            <div class="user-docs-drop"
+                 :class="{dragover: docDragOver}"
+                 @click="$refs.userDocInput.click()"
+                 @dragover.prevent="docDragOver=true"
+                 @dragleave.prevent="docDragOver=false"
+                 @drop.prevent="onDropUserDoc">
+              <input type="file" ref="userDocInput" hidden accept=".pdf,.docx,.md,.txt,.html,.htm" @change="onPickUserDoc">
+              <span v-if="userDocUploading">上传解析中...</span>
+              <span v-else>拖拽文件到这里，或<span style="color:#0071e3;font-weight:500">点击选择文件</span></span>
+            </div>
+            <div v-if="userDocs.length" class="user-docs-list">
+              <div v-for="d in userDocs" :key="d.id" class="user-docs-item">
+                <span style="font-size:14px">📄</span>
+                <span class="fname" :title="d.filename">{{ d.filename }}</span>
+                <span class="size">{{ humanSize(d.size) }} · 文本 {{ d.text_length }} 字</span>
+                <button class="del-btn" @click="deleteUserDoc(d)">删除</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-pane">
+            <div class="doc-template-bar">
+              <div style="display:flex; gap:8px; align-items:center;">
+                <label>文档模板</label>
+                <select v-model="docTemplate" @change="onTemplateChange">
+                  <option v-for="(t,k) in docTemplates" :key="k" :value="k">{{ t.name }}</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </div>
+              <span v-if="docTemplate!=='custom' && docTemplates[docTemplate]" class="doc-template-desc">
+                {{ docTemplates[docTemplate].description }}
+              </span>
+              <div v-if="docTemplate==='custom'" class="section-toggle-list">
+                <label v-for="(label, sec) in sectionLabels" :key="sec" class="section-toggle">
+                  <input type="checkbox" :value="sec" v-model="customSections">
+                  <span>{{ label }}</span>
+                </label>
+              </div>
+            </div>
+            <div class="doc-toolbar">
+              <span class="doc-toolbar-title">📐 架构设计文档</span>
+              <button @click="doGenDoc" class="btn-primary" :disabled="docLoading">
+                <span v-if="docLoading" class="apple-spinner" style="width:13px;height:13px;border-width:2px"></span>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                {{ docContent ? '重新生成' : '生成文档' }}
+              </button>
+            </div>
+            <div class="doc-body">
+              <div v-if="docLoading" class="loading-block">
+                <div class="spinner-lg"></div>
+                <div style="margin-top:14px;font-size:14px;color:var(--text-2);font-weight:500">{{ docStage || '正在分析代码结构，生成专业文档...' }}</div>
+                <div v-if="docProgress" style="margin-top:6px;font-size:12.5px;color:var(--text-3)">{{ docProgress }}</div>
+              </div>
+              <div v-else-if="docContent" v-html="docContent"></div>
+              <div v-else class="empty" style="padding:60px 20px">
+                <div class="empty-icon">📐</div>
+                <div class="empty-title">还没有生成文档</div>
+                <div class="empty-sub">选择模板后点击"生成文档"，AI 将基于代码文档图谱与 PlantUML 渲染图表</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- QA tab -->
+        <div v-if="currentRepo && currentTab==='qa'">
+          <div class="detail-head">
+            <div class="detail-title-row">
+              <h1 class="detail-title">代码问答</h1>
+              <span style="font-size:12px;color:var(--text-3);font-weight:500;background:#fff;padding:4px 10px;border-radius:8px;border:1px solid var(--border)">{{ currentRepo.name }}</span>
+            </div>
+            <div class="detail-sub">用自然语言提问，AI 基于知识图谱回答关于这个仓库代码的任何问题</div>
+          </div>
+
+          <div class="chat-pane">
+            <div class="chat-head">
+              <div class="chat-head-avatar">AI</div>
+              <div style="flex:1">
+                <div class="chat-head-name">代码文档助手</div>
+                <div class="chat-head-status">在线 · 基于 DeepSeek-V3</div>
+              </div>
+            </div>
+            <div class="chat-stream" ref="chatBox">
+              <div v-for="(m, i) in chatMessages" :key="i" :class="'bubble-row ' + m.role">
+                <div class="bubble-avatar">{{ m.role==='me' ? (username||'?').charAt(0).toUpperCase() : 'AI' }}</div>
+                <div class="bubble-body">
+                  <div class="bubble-meta">{{ m.role==='me' ? username : '代码助手' }} · {{ m.time }}</div>
+                  <div class="bubble">{{ m.content }}</div>
+                  <div v-if="m.role==='bot' && m.groundedness !== undefined && m.total_refs > 0" class="groundedness-badge" :class="groundednessClass(m.groundedness)" :title="groundednessTitle(m)">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px;margin-right:3px"><path d="M12 2L4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5l-8-3z"/></svg>
+                    <span>引用可信度 {{ Math.round(m.groundedness * 100) }}%</span>
+                    <span style="opacity:0.75;margin-left:4px">· {{ m.valid_refs_count }}/{{ m.total_refs }} 已核对</span>
+                    <span v-if="m.invalid_refs && m.invalid_refs.length" class="invalid-refs-toggle" @click="toggleInvalidRefs(i)" style="margin-left:6px;cursor:pointer;text-decoration:underline">{{ expandedInvalid[i] ? '收起' : '查看未匹配' }}</span>
+                  </div>
+                  <div v-if="m.role==='bot' && expandedInvalid[i] && m.invalid_refs && m.invalid_refs.length" class="invalid-refs-list">
+                    未在知识图谱中找到：<code v-for="r in m.invalid_refs" :key="r" style="margin-right:6px">{{ r }}</code>
+                  </div>
+                </div>
+              </div>
+              <div v-if="chatLoading" class="bubble-row bot">
+                <div class="bubble-avatar">AI</div>
+                <div class="bubble-body">
+                  <div class="bubble-meta">代码助手 · 思考中</div>
+                  <div class="bubble thinking">
+                    <span class="thinking-dot"></span>
+                    <span class="thinking-dot"></span>
+                    <span class="thinking-dot"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="chat-input-bar">
+              <textarea v-model="chatInput" class="chat-textarea" placeholder="输入关于代码的问题，按 Enter 发送..." rows="1" @keydown.enter.exact.prevent="doAsk"></textarea>
+              <button class="chat-send" @click="doAsk" :disabled="chatLoading || !chatInput.trim()" title="发送">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+    <!-- Add Modal -->
+    <div v-if="showAddModal" class="modal-mask" @click.self="closeAddModal">
+      <div class="modal-card">
+        <div class="modal-title">添加仓库</div>
+        <div class="modal-sub">从 GitHub 导入或上传本地 ZIP，系统将自动构建代码文档图谱</div>
+
+        <div class="add-tabs">
+          <button class="add-tab" :class="{active: addTab==='github'}" @click="addTab='github'">GitHub 链接</button>
+          <button class="add-tab" :class="{active: addTab==='upload'}" @click="addTab='upload'">本地上传</button>
+        </div>
+
+        <!-- GitHub tab -->
+        <div v-if="addTab==='github'">
+          <input v-model="addUrl" class="modal-input" placeholder="https://github.com/owner/repo" @keydown.enter="doAddRepo">
+          <div class="modal-actions">
+            <button @click="closeAddModal" class="btn-secondary">取消</button>
+            <button @click="doAddRepo" class="btn-primary" :disabled="addLoading">
+              <span v-if="addLoading" class="apple-spinner" style="width:13px;height:13px;border-width:2px"></span>
+              开始导入
+            </button>
+          </div>
+        </div>
+
+        <!-- Upload tab -->
+        <div v-else-if="addTab==='upload'">
+          <input v-model="uploadName" class="modal-input" placeholder="仓库名称（字母 / 数字 / - / _）" style="margin-bottom:12px">
+          <input ref="fileInput" type="file" accept=".zip" style="display:none" @change="onFilePicked">
+          <div class="drop-zone"
+               :class="{'has-file': !!uploadFile, dragging: dragOver}"
+               @click="$refs.fileInput && $refs.fileInput.click()"
+               @dragover.prevent="dragOver=true"
+               @dragleave.prevent="dragOver=false"
+               @drop.prevent="onFileDropped">
+            <svg v-if="!uploadFile" class="drop-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <div v-if="!uploadFile" class="drop-text">拖拽 ZIP 文件到此处或点击选择</div>
+            <div v-if="!uploadFile" class="drop-hint">（最大 50MB）</div>
+            <div v-else class="picked-file">
+              <div class="picked-name">📦 {{ uploadFile.name }}</div>
+              <div class="picked-size">{{ humanSize(uploadFile.size) }}</div>
+              <button class="picked-clear" @click.stop="uploadFile=null">移除</button>
+            </div>
+          </div>
+          <button @click="doUploadRepo" class="btn-primary" style="width:100%;margin-top:14px;justify-content:center" :disabled="uploadLoading || !uploadFile || !uploadName.trim()">
+            <span v-if="uploadLoading" class="apple-spinner" style="width:13px;height:13px;border-width:2px"></span>
+            {{ uploadLoading ? '上传中…' : '上传并索引' }}
+          </button>
+          <div class="modal-actions" style="margin-top:8px">
+            <button @click="closeAddModal" class="btn-secondary">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

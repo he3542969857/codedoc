@@ -1,0 +1,10 @@
+.venv/
+repos/
+__pycache__/
+*.pyc
+*.bak*
+users.db*
+*.log
+docs/
+*.png
+server.py.bak*

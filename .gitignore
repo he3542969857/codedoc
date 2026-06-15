@@ -1,0 +1,35 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据 / 运行态(不入库)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.log
+repos/
+sessions/
+logs/
+data/
+models_cache.json
+
+# 密钥(务必不要提交)
+.env
+*.env
+!.env.example
+
+# 其它
+node_modules/
+*.bak
+*.bak_*
+.DS_Store
+
+# data/backup
+*.db
+*.migrated-bak
+*-bak
+users.db*

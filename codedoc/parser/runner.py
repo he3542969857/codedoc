@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..config import Config
 from . import python_parser, java_parser, js_parser
+from .resolve import resolve_call
 
 _EXT_LANG = {".py": "python", ".java": "java", ".js": "javascript",
              ".jsx": "javascript", ".ts": "javascript", ".tsx": "javascript"}
@@ -78,42 +79,8 @@ def parse_repo(cfg: Config):
         if n.get("qualified_name"):
             qn2kind[n["qualified_name"]] = n.get("kind", "")
 
-    def _qn(node_id: str) -> str:
-        return node_id.split("::", 1)[1] if "::" in node_id else node_id
-
-    def _container(node_id: str) -> str:
-        qn = _qn(node_id)
-        return qn.rsplit(".", 1)[0] if "." in qn else qn
-
-    def _in_scope(src_id: str, cand_id: str) -> bool:
-        # 裸名调用按 Python LEGB 只能解析到:模块级 / 类成员 / 调用者所在闭包。
-        # 嵌套在【别的】函数里的局部名够不着 -> 排除(否则把同名嵌套 helper 误连)。
-        cont = _container(cand_id)
-        if qn2kind.get(cont) in ("module", "class"):
-            return True
-        cq = _qn(src_id)
-        return cq == cont or cq.startswith(cont + ".")
-
-    def _resolve(src_id: str, short: str):
-        cands = [c for c in by_short.get(short, ())
-                 if c != src_id and _in_scope(src_id, c)]
-        if not cands:
-            return None, ""                       # 外部 / stdlib:不连
-        if len(cands) == 1:
-            return cands[0], "unique"             # 全仓唯一同名
-        cf = src_id.split("::")[0]
-        cc = _container(src_id)
-        same_file = [c for c in cands if c.split("::")[0] == cf]
-        if len(same_file) == 1:
-            return same_file[0], "scope"          # 同文件唯一
-        if len(same_file) > 1:                     # 同文件多个 -> 同容器(类/函数)唯一
-            sc = [c for c in same_file if _container(c) == cc]
-            return (sc[0], "scope") if len(sc) == 1 else (None, "")
-        sc = [c for c in cands if _container(c) == cc]  # 跨文件 -> 同容器唯一
-        return (sc[0], "scope") if len(sc) == 1 else (None, "")
-
     for src_id, callee, kind in raw_calls:
-        dst, conf = _resolve(src_id, callee.split(".")[-1])
+        dst, conf = resolve_call(src_id, callee.split(".")[-1], by_short, qn2kind)
         if dst:
             edges.append({"src": src_id, "dst": dst, "kind": kind, "confidence": conf})
 

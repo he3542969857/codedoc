@@ -3436,12 +3436,19 @@ def _check_internal(request: Request):
         raise HTTPException(403, "invalid internal key")
 
 
+from codedoc.graph.query_cache import QueryCache
+def _build_gq(cfg, store):
+    from codedoc.graph.memory_backend import MemoryGraphQuery
+    return MemoryGraphQuery(cfg, store)
+_GQ_CACHE = QueryCache(_build_gq)
+
+
 def _gq_info_for(repo: str):
     info = _ensure_repo_indexed(repo)
     if not info:
         raise HTTPException(404, "repo 未索引: %s" % repo)
     from codedoc.graph.memory_backend import MemoryGraphQuery
-    return MemoryGraphQuery(info["cfg"], info["store"]), info
+    return _GQ_CACHE.get(repo, info["cfg"], info["store"]), info
 
 
 class ToolSearchReq(BaseModel):

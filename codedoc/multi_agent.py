@@ -107,7 +107,7 @@ def build_multi_agent_graph(selector: ReActAgent, supervisor: ReActAgent,
         return out
 
     def select_node(state):
-        out = selector.run("为问题选相关仓:%s" % state.get("question", ""),
+        out = selector.run(state.get("question", ""),
                            ctx={"all_repos": state.get("all_repos", []),
                                 "question": state.get("question", "")})
         repos = (out.get("result") or {}).get("repos", []) or state.get("all_repos", [])
@@ -155,6 +155,29 @@ def build_multi_agent_graph(selector: ReActAgent, supervisor: ReActAgent,
     g.add_edge("merge", "supervisor")
     g.add_edge("synthesize", "supervisor")
     return g.compile()
+
+
+def make_selector(search_repos_tool, judge_relevance_tool, max_iter=6):
+    """生产选仓 agent —— 据选仓测评(eval/select_eval.py)结论:**搜 + rerank 相关性判断,不做依赖图扩**。
+    测评(13 题真实微服务多仓):纯定义搜 F1=0.94;任何依赖扩 precision 崩到 0.25~0.49(编排/hub 仓拉爆全图)。
+    所以选仓 = 搜候选 + 逐个 rerank 判断相关性(压"编排仓 docstring 蹭词"的误命中),**不沿依赖图扩**。
+    依赖只在 RepoAgent 深挖时按"确认调用"暴露,由 supervisor 运行时扩 —— 那是确认依赖,不是选仓时的投机扩。
+
+    search_repos_tool(query) -> [repo, ...](按命中分排序的候选)
+    judge_relevance_tool(repo, query) -> bool(该仓是否真和问题相关)
+    """
+    def policy(goal, scratch):
+        if not scratch:
+            return {"tool": "search_repos", "args": {"query": goal}}
+        cands = scratch[0]["obs"] or []
+        judged = [s for s in scratch if s["tool"] == "judge"]
+        if len(judged) < len(cands):                     # 对候选逐个 rerank 判断
+            return {"tool": "judge", "args": {"repo": cands[len(judged)], "query": goal}}
+        keep = [cands[i] for i, s in enumerate(judged) if s["obs"]]   # 只留判为相关的
+        return {"tool": "finish", "result": {"repos": keep}}
+    tools = {"search_repos": lambda a, c: search_repos_tool(a["query"]),
+             "judge": lambda a, c: judge_relevance_tool(a["repo"], a["query"])}
+    return ReActAgent("selector", policy, tools, max_iter=max_iter)
 
 
 def run_multi_agent(question, all_repos, selector, supervisor, repo_agent_factory,

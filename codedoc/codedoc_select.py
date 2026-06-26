@@ -134,6 +134,83 @@ def select_by_nodes(query: str, cand: int = 40, top: int = 15, ratio: float = 0.
     return [r for r, v in sorted(w.items(), key=lambda x: -x[1]) if v >= ratio * mx] or [scored[0][0]]
 
 
+def select_scored(query: str, cand: int = 40, top: int = 15, ratio: float = 0.40):
+    """同 select_by_nodes,但额外返回置信度 = 最高节点 rerank 分(有没有东西真匹配上)。"""
+    from collections import defaultdict
+    q = _to_english(query)
+    vec = list(pv._embed_query_cached(q)); lit = pv._vec_literal(vec)
+    with pv._conn() as cn, cn.cursor() as cur:
+        cur.execute("SET hnsw.ef_search = %d" % pv._EF_SEARCH)
+        cur.execute("SELECT repo_name, document FROM code_vectors "
+                    "ORDER BY embedding <=> %s::vector LIMIT %s", (lit, cand))
+        rows = cur.fetchall()
+    if not rows:
+        return [], 0.0
+    rr = pv.rerank(q, [_code_repr(r[1] or "") for r in rows])
+    scored = [(rows[i][0], float(sc)) for i, sc in sorted(rr, key=lambda x: -x[1])]
+    best = scored[0][1] if scored else 0.0
+    w = defaultdict(float)
+    for repo, sc in scored[:top]:
+        w[repo] += max(sc, 0.0)
+    mx = max(w.values()) if w else 0.0
+    repos = [r for r, v in sorted(w.items(), key=lambda x: -x[1]) if v >= ratio * mx] or [scored[0][0]]
+    return repos, best
+
+
+def _reformulate(question: str) -> str:
+    """反思用:让 LLM 把问题重表述成更利于代码检索的英文关键词(换个说法再试)。"""
+    try:
+        from codedoc.config import load_config
+        from codedoc.llm_router.router import build_routed_llm
+        from codedoc.agents.llm import ChatMessage
+        llm = build_routed_llm(load_config("."))
+        out = llm.chat([
+            ChatMessage("system", "Rewrite the question into different, more specific English code-search "
+                        "keywords (function/class/API terms a developer would grep). Output ONLY keywords."),
+            ChatMessage("user", question)], max_tokens=60, temperature=0.2)
+        out = (out or "").strip()
+        return out if out and "LLM error" not in out else question
+    except Exception:
+        return question
+
+
+def select_with_reflect(question: str, conf_threshold: float = 0.05) -> dict:
+    """置信门控反思选仓:选完看最高 rerank 分;够高直接用(省反思);
+    低于阈值=没把握=可能选错/笼统问题 → 反思:LLM 重表述再选,取置信更高的一版。
+    grounded:反思依据是真实 rerank 置信,不是 LLM 凭空说不对。便宜门控:有把握不反思。"""
+    repos, conf = select_scored(question)
+    trace = [{"pass": 1, "repos": repos, "conf": round(conf, 4)}]
+    if conf >= conf_threshold:
+        return {"repos": repos, "confident": True, "reflected": False,
+                "confidence": round(conf, 4), "trace": trace}
+    rq = _reformulate(question)                       # 反思:换说法
+    repos2, conf2 = select_scored(rq)
+    trace.append({"pass": 2, "reformulated": rq, "repos": repos2, "conf": round(conf2, 4)})
+    if conf2 > conf:                                  # 重表述后更有把握 → 采纳
+        return {"repos": repos2, "confident": conf2 >= conf_threshold, "reflected": True,
+                "confidence": round(conf2, 4), "trace": trace}
+    return {"repos": repos, "confident": False, "reflected": True, "low_conf": True,
+            "confidence": round(conf, 4), "trace": trace}
+
+
+def route_question(question: str, conf_threshold: float = 0.05) -> dict:
+    """问题路由:置信门控反思选仓 → 决定走【节点选仓多 Agent】还是【GraphRAG 全局】。
+    低置信(选仓没把握=笼统/非代码)或命中全局关键词 → global(GraphRAG community summaries);
+    否则 → repos(选中的仓 → 多 Agent 深挖)。统一'我的 rerank 置信信号'和 codedoc 既有的全局启发。"""
+    try:
+        from codedoc.graphrag import is_global_question
+        glob_kw = is_global_question(question)
+    except Exception:
+        glob_kw = False
+    sel = select_with_reflect(question, conf_threshold)
+    if (not sel["confident"]) or glob_kw:
+        return {"mode": "global",
+                "reason": "global_keyword" if glob_kw else "low_confidence",
+                "confidence": sel.get("confidence", 0.0), "trace": sel["trace"]}
+    return {"mode": "repos", "repos": sel["repos"],
+            "confidence": sel.get("confidence", 0.0), "trace": sel["trace"]}
+
+
 def make_codedoc_search(top_nodes: int = 8, top_repos: int = 4, ratio: float = 0.85,
                         use_rerank: bool = True):
     """返回 search_repos_tool(query, repos) —— 走真索引,聚合到仓级、排序、相对阈值取候选。"""

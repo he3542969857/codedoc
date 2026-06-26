@@ -65,6 +65,18 @@ def repo_scores_reranked(query: str, repos: list[str], top_nodes: int = 8) -> li
     return scored
 
 
+def _code_repr(doc: str) -> str:
+    """给 rerank 用的文本:优先签名+真实源码(def/class 起),压低散文 docstring 权重。
+    对抗错注释——代码'DELETE FROM users'不会撒谎,人写的注释会。document 里 docstring 排在源码前,
+    直接截前 N 字会大半是注释、把真源码截掉,所以这里把源码提前。"""
+    lines = doc.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith(("def ", "class ", "async def ")):
+            head = lines[:3]                              # 全限定名 + 名 + 签名
+            return ("\n".join(head + lines[i:]))[:400]    # + 真实源码(跳过中间的散文注释块)
+    return doc[:400]
+
+
 def select_by_nodes(query: str, cand: int = 40, top: int = 15, ratio: float = 0.40,
                     use_rerank: bool = True) -> list[str]:
     """选仓正式实现 —— 全局节点检索 → rerank → 按仓【rerank 分加权和】定仓。
@@ -84,7 +96,7 @@ def select_by_nodes(query: str, cand: int = 40, top: int = 15, ratio: float = 0.
     if not rows:
         return []
     if use_rerank:
-        rr = pv.rerank(query, [(r[1] or "")[:400] for r in rows])
+        rr = pv.rerank(query, [_code_repr(r[1] or "") for r in rows])   # 用源码,不喂散文注释
         scored = [(rows[i][0], float(sc)) for i, sc in sorted(rr, key=lambda x: -x[1])]
     else:
         scored = [(r[0], 1.0) for r in rows]

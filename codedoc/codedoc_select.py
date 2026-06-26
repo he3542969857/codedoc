@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from codedoc.index import pg_vectors as pv
+from codedoc.multi_agent import make_selector, ReActAgent
 
 
 def indexed_repos() -> list[str]:
@@ -60,3 +61,24 @@ def make_codedoc_search(top_nodes: int = 8, top_repos: int = 4, ratio: float = 0
         top = scored[0][1]
         return [r for r, s in scored[:top_repos] if s >= top * ratio]
     return search_repos_tool
+
+
+# ────────────────────────── 生产装配:接 multi_agent ──────────────────────────
+def make_codedoc_selector(top_repos: int = 3, ratio: float = 0.85):
+    """生产 SelectorAgent —— 真索引 search + rerank 已在 search 内完成判别,judge 直通。"""
+    search = make_codedoc_search(top_repos=top_repos, ratio=ratio, use_rerank=True)
+    return make_selector(lambda q: search(q, None), lambda repo, q: True)
+
+
+def make_codedoc_repo_agent_factory(question: str, top_nodes: int = 5):
+    """生产 RepoAgent 工厂 —— 用真 pv.query 在仓内取证据节点(真索引,选仓后深挖)。"""
+    def factory(repo: str):
+        def policy(goal, scratch):
+            if not scratch:
+                return {"tool": "retrieve", "args": {}}
+            return {"tool": "finish", "result": {"repo": repo, "nodes": scratch[0]["obs"], "deps": []}}
+        tools = {"retrieve": lambda a, c: [
+            h.get("qualified_name") or h.get("name")
+            for h in pv.query(c.get("repo", repo), question, top_k=top_nodes)]}
+        return ReActAgent("repo:%s" % repo, policy, tools, max_iter=3)
+    return factory
